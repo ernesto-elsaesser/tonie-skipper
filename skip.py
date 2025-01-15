@@ -4,6 +4,14 @@ import hashlib
 import protobuf_header
 
 
+# usage: python3 skip.py INPUT_PATH OUTPUT_PATH SKIPPED_CHAPTERS
+# INPUT_PATH - path to a 500304E0 file (Tonie Audio Format) from the SD card
+# OUTPUT_PATH - path to the output file which then can be copied to the SD card
+# SKIPPED_CHAPTERS - comma-separated list of chapter numbers (starting from 1)
+
+# partially adapted from https://github.com/bailli/opus2tonie
+
+
 PAGE_HEADER_FORMAT = "<BBQLLLB"
 SAMPLE_RATE_KHZ = 48
 FRAME_DURATIONS = {c: [2.5, 5, 10, 20][c % 4] * SAMPLE_RATE_KHZ
@@ -128,3 +136,5 @@ output_file.write(struct.pack(">L", len(fixed_header_data)))
 output_file.write(fixed_header_data)
 
 output_file.close()
+
+print("done.")
