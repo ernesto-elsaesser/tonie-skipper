@@ -159,7 +159,7 @@ if output_chapter_nums[0] != 1:
 
 for chapter_num in output_chapter_nums:
 
-    print(" - chapter ", chapter_num)
+    print(" - chapter", chapter_num)
 
     output_chapter_page_nums.append(next_page_num)
 
