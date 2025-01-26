@@ -48,7 +48,7 @@ def adjust_page_header(header, body, granule_position, page_num):
 
 input_path, output_dir, chapter_list = sys.argv[1:4]
 
-output_chapter_nums = {int(n) for n in chapter_list.split(",")}
+output_chapter_nums = [int(n) for n in chapter_list.split(",")]
 
 input_file = open(input_path, "rb")
 file_size = input_file.seek(0, 2)
@@ -106,9 +106,9 @@ while input_file.tell() < file_size:
         continued = length == 255
 
     if page_num < 2:
-        prefix_page_data += header_data + body_data
+        prefix_page_data += OGG_MAGIC + header_data + body_data
     else:
-        current_chapter_pages.append((header_data, body_data, duration))
+        current_chapter_pages.append((page_header, body_data, duration))
 
 chapter_pages[current_chapter_num] = current_chapter_pages
 input_file.close()
@@ -116,7 +116,9 @@ input_file.close()
 
 for chapter_num, pages in chapter_pages.items():
 
-    output_file = open(output_dir + f"/chapter{chapter_num}.ogg", "wb")
+    file_name = output_dir + f"/chapter{chapter_num}.ogg"
+    print(file_name)
+    output_file = open(file_name, "wb")
     output_file.write(prefix_page_data)
     granule_position = 0
     next_page_num = 2
@@ -130,7 +132,9 @@ for chapter_num, pages in chapter_pages.items():
         next_page_num += 1
 
 
-output_file = open(output_dir + "/500304E0", "wb")
+file_name = output_dir + "/500304E0"
+print(file_name)
+output_file = open(file_name, "wb")
 output_file.write(bytearray(0x1000)) # placeholder
 
 sha1 = hashlib.sha1()
@@ -143,23 +147,27 @@ next_page_num = 2
 
 # need third page for block alignment
 if output_chapter_nums[0] != 1:
-    header_data, body_data, duration = chapter_pages[1]
+    page_header, body_data, duration = chapter_pages[1][0]
+    granule_position += duration
+    header_data = adjust_page_header(page_header, body_data,
+                                            granule_position, next_page_num)
     page_data = OGG_MAGIC + header_data + body_data
     sha1.update(page_data)
     output_file.write(page_data)
-    granule_position += duration
     next_page_num += 1
 
 
 for chapter_num in output_chapter_nums:
 
+    print(" - chapter ", chapter_num)
+
     output_chapter_page_nums.append(next_page_num)
 
-    for header_data, body_data, duration in chapter_pages[chapter_num]:
+    for page_header, body_data, duration in chapter_pages[chapter_num]:
         granule_position += duration
-        mod_header_data = adjust_page_header(page_header, body_data,
+        header_data = adjust_page_header(page_header, body_data,
                                             granule_position, next_page_num)
-        page_data = OGG_MAGIC + mod_header_data + body_data
+        page_data = OGG_MAGIC + header_data + body_data
         sha1.update(page_data)
         output_file.write(page_data)
         next_page_num += 1
@@ -183,4 +191,4 @@ output_file.write(fixed_header_data)
 
 output_file.close()
 
-print("done.")
+print("done")
