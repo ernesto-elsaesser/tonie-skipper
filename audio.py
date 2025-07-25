@@ -10,7 +10,7 @@ SAMPLE_RATE_KHZ = 48
 FRAME_DURATIONS = {c: [2.5, 5, 10, 20][c % 4] * SAMPLE_RATE_KHZ
                    for c in range(16, 32)}
 
-Header = protobuf_header.TonieHeader  # type: ignore
+TonieHeader = protobuf_header.TonieHeader  # type: ignore
 
 crc_table = []
 for i in range(256):
@@ -76,15 +76,20 @@ def parse_tonie(in_file: io.BufferedReader) -> TonieAudio:
     file_size = in_file.seek(0, 2)
     in_file.seek(0)
 
-    header_size = struct.unpack(">L", in_file.read(4))[0]
-    header_data = in_file.read(header_size)
-    tonie_header = Header.FromString(header_data)
+    tonie_header = parse_tonie_header(in_file)
     timestamp = tonie_header.timestamp
     chapter_start_pages = dict(enumerate(tonie_header.chapterPages))
 
     pages = parse_ogg(in_file, file_size)
 
     return TonieAudio(pages, timestamp, chapter_start_pages)
+
+
+def parse_tonie_header(in_file: io.BufferedReader):
+
+    header_size = struct.unpack(">L", in_file.read(4))[0]
+    header_data = in_file.read(header_size)
+    return TonieHeader.FromString(header_data)
 
 
 def parse_opus(in_file: io.BufferedReader) -> dict[int, OggPage]:
@@ -181,7 +186,7 @@ def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int], out_file: io
             sha1.update(page_data)
             next_page_num += 1
 
-    tonie_header = Header()
+    tonie_header = TonieHeader()
     tonie_header.dataHash = sha1.digest()
     tonie_header.dataLength = out_file.seek(0, 1) - 0x1000
     tonie_header.timestamp = tonie_audio.timestamp
