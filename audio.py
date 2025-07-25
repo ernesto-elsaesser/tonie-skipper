@@ -28,29 +28,50 @@ def crc32(bytestream):
     return crc
 
 
-def adjust_page_header(header, body, granule_position, page_num):
-    modified_header = list(header)
-    modified_header[2] = granule_position
-    modified_header[4] = page_num
-    modified_header[5] = 0  # zero checksum
-    header_data = struct.pack(PAGE_HEADER_FORMAT, *modified_header)
-    checksum = crc32(OGG_MAGIC + header_data + body)
-    modified_header[5] = checksum
-    return struct.pack(PAGE_HEADER_FORMAT, *modified_header)
+class OggPage:
+
+    def __init__(self, header: bytes):
+
+        self.header = header
+        self.header_fields = struct.unpack(PAGE_HEADER_FORMAT, header)
+        self.body = b""
+        self.duration = 0
+
+    def raw(self) -> bytes:
+        return self.serialize(self.header_fields)
+    
+    def adjusted(self, granule_position: int, page_num: int):
+        mod_fields = list(self.header_fields)
+        mod_fields[2] = granule_position
+        mod_fields[4] = page_num
+        mod_fields[5] = 0  # zero checksum
+        pre_header = struct.pack(PAGE_HEADER_FORMAT, *mod_fields)
+        checksum = crc32(OGG_MAGIC + pre_header + self.body)
+        mod_fields[5] = checksum
+        return self.serialize(tuple(mod_fields))
+    
+    def serialize(self, header_fields: tuple):
+        header = struct.pack(PAGE_HEADER_FORMAT, *header_fields)
+        return OGG_MAGIC + header + self.body
 
 
-class AudioData:
+class TonieAudio:
 
-    def __init__(self, timestamp: int):
+    def __init__(self, pages: dict[int, OggPage], timestamp: int, chapter_start_pages: dict[int, int]):
 
+        self.pages = pages
         self.timestamp = timestamp
-        self.prefix_page_data = b""
-        self.align_page_data = b""
-        self.align_duration = 0
-        self.chapter_pages: dict[int, list] = {}
+        self.chapter_start_pages = chapter_start_pages
+
+    def get_chapter_pages(self, chapter_num: int) -> list[OggPage]:
+
+        start_page = self.chapter_start_pages[chapter_num]
+        end_page = self.chapter_start_pages[chapter_num + 1]
+        return [self.pages[i] for i in range(start_page, end_page)]
 
 
-def parse(in_file: io.BufferedReader) -> AudioData:
+
+def parse_tonie(in_file: io.BufferedReader) -> TonieAudio:
 
     file_size = in_file.seek(0, 2)
     in_file.seek(0)
@@ -58,36 +79,32 @@ def parse(in_file: io.BufferedReader) -> AudioData:
     header_size = struct.unpack(">L", in_file.read(4))[0]
     header_data = in_file.read(header_size)
     tonie_header = Header.FromString(header_data)
+    timestamp = tonie_header.timestamp
+    chapter_start_pages = dict(enumerate(tonie_header.chapterPages))
 
-    page_chapter_nums = {n: i+1 for i, n in enumerate(tonie_header.chapterPages)}
+    pages = parse_ogg(in_file, file_size)
 
-    audio_data = AudioData(tonie_header.timestamp)
-    current_chapter_num = -1
-    current_chapter_pages = []
+    return TonieAudio(pages, timestamp, chapter_start_pages)
+
+
+def parse_ogg(in_file: io.BufferedReader, file_size: int) -> dict[int, OggPage]:
+
+    pages: dict[int, OggPage] = {}
 
     while in_file.tell() < file_size:
 
         # https://datatracker.ietf.org/doc/html/rfc3533#section-6
         assert in_file.read(4) == OGG_MAGIC
-        header_data = in_file.read(23)
-        page_header = struct.unpack(PAGE_HEADER_FORMAT, header_data)
-
-        page_num = page_header[4]
-        chapter_num = page_chapter_nums.get(page_num)
-        if chapter_num is not None:
-            if current_chapter_num != -1:
-                audio_data.chapter_pages[current_chapter_num] = current_chapter_pages
-            current_chapter_num = chapter_num
-            current_chapter_pages = []
-
-        packet_count = page_header[6]
+        header = in_file.read(23)
+        page = OggPage(header)
+        page_num: int = page.header_fields[4]
+        packet_count: int = page.header_fields[6]
         packet_table = in_file.read(packet_count)
-        body_data = packet_table
-        duration = 0
+        page.body += packet_table
         continued = False
         for length in packet_table:
             packet = in_file.read(length)
-            body_data += packet
+            page.body += packet
 
             if page_num > 1 and not continued:
                 info = struct.unpack("<B", packet[0:1])[0]
@@ -103,68 +120,56 @@ def parse(in_file: io.BufferedReader) -> AudioData:
                     frame_count = struct.unpack("<B", packet[1:2])[0] & 63
                 else:
                     raise ValueError
-                duration += FRAME_DURATIONS[config_value] * frame_count
+                page.duration += FRAME_DURATIONS[config_value] * frame_count
 
             continued = length == 255
 
-        if page_num < 2:
-            audio_data.prefix_page_data += OGG_MAGIC + header_data + body_data
-        elif page_num == 2:
-            audio_data.align_page_data = OGG_MAGIC + header_data + body_data
-            audio_data.align_duration = duration
-        else:
-            current_chapter_pages.append((page_header, body_data, duration))
+        pages[page_num] = page
 
-    audio_data.chapter_pages[current_chapter_num] = current_chapter_pages
-
-    return audio_data
+    return pages
 
 
-def export_chapter(audio_data: AudioData, chapter_num: int, out_file: io.BufferedWriter):
+def export_chapter(tonie_audio: TonieAudio, chapter_num: int, out_file: io.BufferedWriter):
 
-    out_file.write(audio_data.prefix_page_data)
+    # prefix
+    out_file.write(tonie_audio.pages[0].raw())
+    out_file.write(tonie_audio.pages[1].raw())
+
     granule_position = 0
     next_page_num = 2
 
     if chapter_num == 1:
-        out_file.write(audio_data.align_page_data)
-        granule_position = audio_data.align_duration
+        align_page = tonie_audio.pages[2]
+        out_file.write(align_page.raw())
+        granule_position = align_page.duration
         next_page_num = 3
 
-    for header_data, body_data, duration in audio_data.chapter_pages[chapter_num]:
-        granule_position += duration
-        mod_header_data = adjust_page_header(header_data, body_data,
-                                        granule_position, next_page_num)
-        page_data = OGG_MAGIC + mod_header_data + body_data
-        out_file.write(page_data)
+    for page in tonie_audio.get_chapter_pages(chapter_num):
+        granule_position += page.duration
+        out_file.write(page.adjusted(granule_position, next_page_num))
         next_page_num += 1
 
 
-def compose(audio_data: AudioData, chapter_nums: list[int], out_file: io.BufferedWriter):
+def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int], out_file: io.BufferedWriter):
 
     out_file.write(bytearray(0x1000)) # placeholder
 
     sha1 = hashlib.sha1()
-    out_file.write(audio_data.prefix_page_data)
-    sha1.update(audio_data.prefix_page_data)
 
-    # need third page for block alignment
-    granule_position = audio_data.align_duration
-    next_page_num = 3
-    out_file.write(audio_data.align_page_data)
-    sha1.update(audio_data.align_page_data)
+    for page_num in range(3):
+        prefix_page = tonie_audio.pages[page_num]
+        page_data = prefix_page.raw()
+        out_file.write(page_data)
+        sha1.update(page_data)
 
     output_chapter_page_nums = []
-
+    granule_position = tonie_audio.pages[2].duration
+    next_page_num = 3
     for chapter_num in chapter_nums:
-
         output_chapter_page_nums.append(next_page_num)
-
-        for page_header, body_data, duration in audio_data.chapter_pages[chapter_num]:
-            granule_position += duration
-            header_data = adjust_page_header(page_header, body_data,
-                                                granule_position, next_page_num)
-            page_data = OGG_MAGIC + header_data + body_data
+        for page in tonie_audio.get_chapter_pages(chapter_num):
+            granule_position += page.duration
+            page_data = page.adjusted(granule_position, next_page_num)
             out_file.write(page_data)
             sha1.update(page_data)
             next_page_num += 1
@@ -172,8 +177,8 @@ def compose(audio_data: AudioData, chapter_nums: list[int], out_file: io.Buffere
     tonie_header = Header()
     tonie_header.dataHash = sha1.digest()
     tonie_header.dataLength = out_file.seek(0, 1) - 0x1000
-    tonie_header.timestamp = audio_data.timestamp
-    tonie_header.chapterPages.extend(chapter_nums)
+    tonie_header.timestamp = tonie_audio.timestamp
+    tonie_header.chapterPages.extend(output_chapter_page_nums)
     tonie_header.padding = bytes(0x100)
 
     tonie_header_data = tonie_header.SerializeToString()
