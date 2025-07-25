@@ -61,6 +61,8 @@ orig_header = protobuf_header.TonieHeader.FromString(header_data)
 page_chapter_nums = {n: i+1 for i, n in enumerate(orig_header.chapterPages)}
 
 prefix_page_data = b""
+align_page_data = None
+align_duration = None
 chapter_pages = {}
 current_chapter_num = None
 current_chapter_pages = None
@@ -107,6 +109,9 @@ while input_file.tell() < file_size:
 
     if page_num < 2:
         prefix_page_data += OGG_MAGIC + header_data + body_data
+    elif page_num == 2:
+        align_page_data = OGG_MAGIC + header_data + body_data
+        align_duration = duration
     else:
         current_chapter_pages.append((page_header, body_data, duration))
 
@@ -122,6 +127,11 @@ for chapter_num, pages in chapter_pages.items():
     output_file.write(prefix_page_data)
     granule_position = 0
     next_page_num = 2
+
+    if chapter_num == 1:
+        output_file.write(align_page_data)
+        granule_position = align_duration
+        next_page_num = 3
 
     for header_data, body_data, duration in pages:
         granule_position += duration
@@ -141,21 +151,13 @@ sha1 = hashlib.sha1()
 output_file.write(prefix_page_data)
 sha1.update(prefix_page_data)
 
-output_chapter_page_nums = []
-granule_position = 0
-next_page_num = 2
-
 # need third page for block alignment
-if output_chapter_nums[0] != 1:
-    page_header, body_data, duration = chapter_pages[1][0]
-    granule_position += duration
-    header_data = adjust_page_header(page_header, body_data,
-                                            granule_position, next_page_num)
-    page_data = OGG_MAGIC + header_data + body_data
-    sha1.update(page_data)
-    output_file.write(page_data)
-    next_page_num += 1
+granule_position = align_duration
+next_page_num = 3
+output_file.write(align_page_data)
+sha1.update(align_page_data)
 
+output_chapter_page_nums = []
 
 for chapter_num in output_chapter_nums:
 
@@ -168,8 +170,8 @@ for chapter_num in output_chapter_nums:
         header_data = adjust_page_header(page_header, body_data,
                                             granule_position, next_page_num)
         page_data = OGG_MAGIC + header_data + body_data
-        sha1.update(page_data)
         output_file.write(page_data)
+        sha1.update(page_data)
         next_page_num += 1
 
 
