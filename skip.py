@@ -7,20 +7,12 @@ import audio
 # OUTPUT_DIR - path to the output folder
 # CHAPTER_LIST - comma-separated list of chapter numbers (starting from 0)
 
-# partially adapted from https://github.com/bailli/opus2tonie
-
 input_path, output_dir, chapter_list = sys.argv[1:4]
 output_chapter_nums = [int(n) for n in chapter_list.split(",")]
 
 print(input_path)
 with open(input_path, "rb") as in_file:
     tonie_audio = audio.parse_tonie(in_file)
-
-for chapter_num in tonie_audio.chapter_start_pages:
-    ogg_file_name = f"{output_dir}/chapter{chapter_num}.ogg"
-    print(ogg_file_name)
-    with open(ogg_file_name, "wb") as ogg_file:
-        audio.export_chapter(tonie_audio, chapter_num, ogg_file)
 
 out_file_name = f"{output_dir}/500304E0"
 print(input_path)

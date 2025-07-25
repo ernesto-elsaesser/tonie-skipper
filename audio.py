@@ -87,6 +87,13 @@ def parse_tonie(in_file: io.BufferedReader) -> TonieAudio:
     return TonieAudio(pages, timestamp, chapter_start_pages)
 
 
+def parse_opus(in_file: io.BufferedReader) -> dict[int, OggPage]:
+
+    file_size = in_file.seek(0, 2)
+    in_file.seek(0)
+    return parse_ogg(in_file, file_size)
+
+
 def parse_ogg(in_file: io.BufferedReader, file_size: int) -> dict[int, OggPage]:
 
     pages: dict[int, OggPage] = {}
