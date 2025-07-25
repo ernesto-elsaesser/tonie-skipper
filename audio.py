@@ -212,7 +212,7 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
         if next_page_size + added_size > MAX_PAGE_SIZE or len(next_page_segments) + len(packet) > 255:
             pad_length = MAX_PAGE_SIZE - next_page_size
             while pad_length > 0:
-                # TODO: test
+                # TODO: fix
                 next_pad = min(pad_length, 255)
                 if next_pad == 1:
                     # can't pad with new segment
@@ -240,7 +240,7 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
         next_page_size += added_size
 
     # TODO required to set different type for last page?
-    # dst_page.page_type = 4
+    # dst_page.info[OPH_PAGE_TYPE] = 4
 
     return chapter_num
 
