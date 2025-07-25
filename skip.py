@@ -103,6 +103,8 @@ while input_file.tell() < file_size:
                 frame_count = 2
             elif framepacking == 3:
                 frame_count = struct.unpack("<B", packet[1:2])[0] & 63
+            else:
+                raise ValueError
             duration += FRAME_DURATIONS[config_value] * frame_count
 
         continued = length == 255
@@ -113,11 +115,13 @@ while input_file.tell() < file_size:
         align_page_data = OGG_MAGIC + header_data + body_data
         align_duration = duration
     else:
+        assert current_chapter_pages is not None
         current_chapter_pages.append((page_header, body_data, duration))
 
 chapter_pages[current_chapter_num] = current_chapter_pages
 input_file.close()
 
+assert align_page_data is not None
 
 for chapter_num, pages in chapter_pages.items():
 
