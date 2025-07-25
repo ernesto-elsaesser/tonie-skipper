@@ -10,7 +10,6 @@ SAMPLE_RATE_KHZ = 48
 FRAME_DURATIONS = {c: [2.5, 5, 10, 20][c % 4] * SAMPLE_RATE_KHZ
                    for c in range(16, 32)}
 
-TonieHeader = protobuf_header.TonieHeader  # type: ignore
 
 crc_table = []
 for i in range(256):
@@ -55,58 +54,57 @@ class OggPage:
         return OGG_MAGIC + header + self.body
 
 
+class TonieHeader:
+
+    def __init__(self, header: bytes):
+
+        self.protobuf = protobuf_header.TonieHeader.FromString(header)  # type: ignore
+        self.timestamp: int = self.protobuf.timestamp
+        self.chapter_start_pages: list[int] = self.protobuf.chapterPages
+
+
 class TonieAudio:
 
-    def __init__(self, pages: dict[int, OggPage], timestamp: int, chapter_start_pages: dict[int, int]):
+    def __init__(self, header: TonieHeader, pages: dict[int, OggPage]):
 
+        self.header = header
         self.pages = pages
-        self.timestamp = timestamp
-        self.chapter_start_pages = chapter_start_pages
 
     def get_chapter_pages(self, chapter_num: int) -> list[OggPage]:
 
-        start_page = self.chapter_start_pages[chapter_num]
-        end_page = self.chapter_start_pages[chapter_num + 1]
+        start_page = self.header.chapter_start_pages[chapter_num]
+        end_page = self.header.chapter_start_pages[chapter_num + 1]
         return [self.pages[i] for i in range(start_page, end_page)]
 
 
 
 def parse_tonie(in_file: io.BufferedReader) -> TonieAudio:
 
-    file_size = in_file.seek(0, 2)
-    in_file.seek(0)
-
     tonie_header = parse_tonie_header(in_file)
-    timestamp = tonie_header.timestamp
-    chapter_start_pages = dict(enumerate(tonie_header.chapterPages))
-
-    pages = parse_ogg(in_file, file_size)
-
-    return TonieAudio(pages, timestamp, chapter_start_pages)
+    pages = parse_ogg(in_file)
+    return TonieAudio(tonie_header, pages)
 
 
-def parse_tonie_header(in_file: io.BufferedReader):
+def parse_tonie_header(in_file: io.BufferedReader) -> TonieHeader:
 
     header_size = struct.unpack(">L", in_file.read(4))[0]
     header_data = in_file.read(header_size)
-    return TonieHeader.FromString(header_data)
+    return TonieHeader(header_data)
 
 
-def parse_opus(in_file: io.BufferedReader) -> dict[int, OggPage]:
+def parse_ogg(in_file: io.BufferedReader) -> dict[int, OggPage]:
 
-    file_size = in_file.seek(0, 2)
-    in_file.seek(0)
-    return parse_ogg(in_file, file_size)
-
-
-def parse_ogg(in_file: io.BufferedReader, file_size: int) -> dict[int, OggPage]:
+    # https://datatracker.ietf.org/doc/html/rfc3533#section-6
 
     pages: dict[int, OggPage] = {}
 
-    while in_file.tell() < file_size:
+    while True:
 
-        # https://datatracker.ietf.org/doc/html/rfc3533#section-6
-        assert in_file.read(4) == OGG_MAGIC
+        magic = in_file.read(4)
+        if len(magic) == 0:
+            break
+        assert magic == OGG_MAGIC
+
         header = in_file.read(23)
         page = OggPage(header)
         page_num: int = page.header_fields[4]
@@ -162,6 +160,22 @@ def export_chapter(tonie_audio: TonieAudio, chapter_num: int, out_file: io.Buffe
         next_page_num += 1
 
 
+def clear_chapters(tonie_audio: TonieAudio):
+
+    tonie_audio.header.chapter_start_pages = []
+    tonie_audio.pages = {i: tonie_audio.pages[i] for i in range(3)}
+
+
+def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader):
+
+    start_page_num = max(tonie_audio.pages) + 1
+    tonie_audio.header.chapter_start_pages.append(start_page_num)
+
+    new_pages = parse_ogg(in_file)
+    for offset, page in new_pages.items():
+        tonie_audio.pages[start_page_num + offset] = page
+
+
 def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int], out_file: io.BufferedWriter):
 
     out_file.write(bytearray(0x1000)) # placeholder
@@ -186,10 +200,10 @@ def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int], out_file: io
             sha1.update(page_data)
             next_page_num += 1
 
-    tonie_header = TonieHeader()
+    tonie_header = protobuf_header.TonieHeader()  # type: ignore
     tonie_header.dataHash = sha1.digest()
     tonie_header.dataLength = out_file.seek(0, 1) - 0x1000
-    tonie_header.timestamp = tonie_audio.timestamp
+    tonie_header.timestamp = tonie_audio.header.timestamp
     tonie_header.chapterPages.extend(output_chapter_page_nums)
     tonie_header.padding = bytes(0x100)
 

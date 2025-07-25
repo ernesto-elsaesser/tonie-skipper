@@ -12,7 +12,7 @@ print(input_path)
 with open(input_path, "rb") as in_file:
     tonie_audio = audio.parse_tonie(in_file)
 
-for chapter_num in tonie_audio.chapter_start_pages:
+for chapter_num in tonie_audio.header.chapter_start_pages:
     ogg_file_name = f"{output_dir}/chapter{chapter_num}.ogg"
     print(ogg_file_name)
     with open(ogg_file_name, "wb") as ogg_file:
