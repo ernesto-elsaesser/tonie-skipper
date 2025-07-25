@@ -14,14 +14,12 @@ print(in_file_name)
 with open(in_file_name, "rb") as in_file:
     tonie_audio = audio.parse_tonie(in_file)
 
-audio.clear_chapters(tonie_audio)
-
 print(opus_path)
 with open(opus_path, "rb") as opus_file:
-    audio.append_chapter(tonie_audio, opus_file)
+    chapter_num = audio.append_chapter(tonie_audio, opus_file)
 
 out_file_name = f"{output_dir}/500304E0"
 print(out_file_name)
 with open(out_file_name, "wb") as out_file:
-    audio.compose_tonie(tonie_audio, [0], out_file)
+    audio.compose_tonie(tonie_audio, [chapter_num], out_file)
 
