@@ -190,12 +190,15 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
 
     src_pages = parse_ogg(in_file)
 
-    packets: list[list[bytes]] = [[]]
-    for src_page in src_pages:
+    packets: list[list[bytes]] = []
+    for src_page in src_pages[2:]:
+        packets.append([])
+        prev_len = 255
         for segment in src_page.segments:
-            if len(segment) < 255:
+            if prev_len < 255:
                 packets.append([])
             packets[-1].append(segment)
+            prev_len = len(segment)
 
     last_page = tonie_audio.pages[-1]
     granule_position = last_page.info[OPH_GRANULE_POS]
@@ -211,9 +214,14 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
             while pad_length > 0:
                 # TODO: test
                 next_pad = min(pad_length, 255)
-                pad_data = [0] * next_pad
-                pad_data[0] = (31 << 3) + 3
-                next_page_segments.append(bytes(pad_data))
+                if next_pad == 1:
+                    # can't pad with new segment
+                    # also can't extend previous segment if already 255
+                    raise NotImplementedError
+                else:
+                    pad_data = [0] * next_pad
+                    pad_data[0] = (31 << 3) + 3
+                    next_page_segments.append(bytes(pad_data))
                 pad_length -= next_pad
             dst_page = OggPage(last_page.info)
             dst_page.segments = next_page_segments
