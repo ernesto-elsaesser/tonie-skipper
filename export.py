@@ -3,13 +3,14 @@ import audio
 
 
 # usage: python3 export.py INPUT_PATH
-# INPUT_PATH - path to a 500304E0 file (Tonie Audio Format) from the SD card
+# INPUT_DIR - path to folder from SD card
 # OUTPUT_DIR - path to the output folder
 
-input_path, output_dir = sys.argv[1:3]
+input_dir, output_dir = sys.argv[1:3]
 
-print(input_path)
-with open(input_path, "rb") as in_file:
+in_file_name = f"{input_dir}/500304E0"
+print(in_file_name)
+with open(in_file_name, "rb") as in_file:
     tonie_audio = audio.parse_tonie(in_file)
 
 for chapter_num in tonie_audio.header.chapter_start_pages:
