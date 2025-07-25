@@ -9,6 +9,7 @@ PAGE_HEADER_FORMAT = "<BBQLLLB"
 SAMPLE_RATE_KHZ = 48
 FRAME_DURATIONS = {c: [2.5, 5, 10, 20][c % 4] * SAMPLE_RATE_KHZ
                    for c in range(16, 32)}
+MAX_PAGE_SIZE = 0x1000
 
 
 crc_table = []
@@ -27,37 +28,80 @@ def crc32(bytestream):
     return crc
 
 
+OPH_VERSION = 0
+OPH_PAGE_TYPE = 1
+OPH_GRANULE_POS = 2
+OPH_SERIAL_NO = 3
+OPH_PAGE_NO = 4
+OPH_CHECKSUM = 5
+OPH_SEGMENT_COUNT = 6
+
 class OggPage:
 
-    def __init__(self, header: bytes):
+    def __init__(self, info: list):
 
-        self.header = header
-        self.header_fields = struct.unpack(PAGE_HEADER_FORMAT, header)
-        self.body = b""
-        self.duration = 0
+        self.info = info
+        self.segments: list[bytes] = []
 
-    def raw(self) -> bytes:
-        return self.serialize(self.header)
+    def get_duration(self) -> int:
+
+        duration = 0
+        prev_length = 0
+        for segment in self.segments:
+            if prev_length < 255: # continued segment
+                info = struct.unpack("<B", segment[0:1])[0]
+                config_value = info >> 3
+                framepacking = info & 3
+                if framepacking == 0:
+                    frame_count = 1
+                elif framepacking == 1:
+                    frame_count = 2
+                elif framepacking == 2:
+                    frame_count = 2
+                elif framepacking == 3:
+                    frame_count = struct.unpack("<B", segment[1:2])[0] & 63
+                else:
+                    raise ValueError
+                duration += FRAME_DURATIONS[config_value] * frame_count
+            prev_length = len(segment)
+        
+        return duration
     
-    def adjusted(self, granule_position: int, page_num: int):
-        mod_fields = list(self.header_fields)
-        mod_fields[2] = granule_position
-        mod_fields[4] = page_num
-        mod_fields[5] = 0  # zero checksum
-        pre_header = struct.pack(PAGE_HEADER_FORMAT, *mod_fields)
-        checksum = crc32(OGG_MAGIC + pre_header + self.body)
-        mod_fields[5] = checksum
-        mod_header = struct.pack(PAGE_HEADER_FORMAT, *mod_fields)
-        return self.serialize(mod_header)
+    def serialize_with(self, granule_position: int, page_num: int):
+
+        adj_info = list(self.info)
+        adj_info[OPH_GRANULE_POS] = granule_position
+        adj_info[OPH_PAGE_NO] = page_num
+        page = OggPage(adj_info)
+        page.segments = self.segments
+        page.update_checksum()
+        return page.serialize()
     
-    def serialize(self, header: bytes):
-        return OGG_MAGIC + header + self.body
+    def update_checksum(self):
+
+        self.info[OPH_CHECKSUM] = 0
+        checksum_data = self.serialize()
+        self.info[OPH_CHECKSUM] = crc32(checksum_data)
+    
+    def serialize_header(self) -> bytes:
+
+        return struct.pack(PAGE_HEADER_FORMAT, *self.info)
+    
+    def serialize_body(self) -> bytes:
+
+        body = bytes(len(s) for s in self.segments)
+        for segment in self.segments:
+            body += segment
+        return body
+    
+    def serialize(self):
+
+        return OGG_MAGIC + self.serialize_header() + self.serialize_body()
 
 
 class TonieHeader:
 
     def __init__(self, header: bytes):
-
         self.protobuf = protobuf_header.TonieHeader.FromString(header)  # type: ignore
         self.timestamp: int = self.protobuf.timestamp
         self.chapter_start_pages: list[int] = list(self.protobuf.chapterPages)
@@ -109,34 +153,14 @@ def parse_ogg(in_file: io.BufferedReader) -> list[OggPage]:
         assert magic == OGG_MAGIC
 
         header = in_file.read(23)
-        page = OggPage(header)
-        page_num: int = page.header_fields[4]
-        assert page_num == len(pages)
-        packet_count: int = page.header_fields[6]
-        packet_table = in_file.read(packet_count)
-        page.body += packet_table
-        continued = False
-        for length in packet_table:
-            packet = in_file.read(length)
-            page.body += packet
-
-            if page_num > 1 and not continued:
-                info = struct.unpack("<B", packet[0:1])[0]
-                config_value = info >> 3
-                framepacking = info & 3
-                if framepacking == 0:
-                    frame_count = 1
-                elif framepacking == 1:
-                    frame_count = 2
-                elif framepacking == 2:
-                    frame_count = 2
-                elif framepacking == 3:
-                    frame_count = struct.unpack("<B", packet[1:2])[0] & 63
-                else:
-                    raise ValueError
-                page.duration += FRAME_DURATIONS[config_value] * frame_count
-
-            continued = length == 255
+        info = struct.unpack(PAGE_HEADER_FORMAT, header)
+        page = OggPage(list(info))
+        assert page.info[OPH_PAGE_NO] == len(pages)
+        segment_count = page.info[OPH_SEGMENT_COUNT]
+        segment_lengths = in_file.read(segment_count)
+        for length in segment_lengths:
+            segment = in_file.read(length)
+            page.segments.append(segment)
 
         pages.append(page)
 
@@ -147,24 +171,68 @@ def export_chapter(tonie_audio: TonieAudio, chapter_num: int, out_file: io.Buffe
 
     next_page_num = 0
     if chapter_num > 0:
-        out_file.write(tonie_audio.pages[0].raw())
-        out_file.write(tonie_audio.pages[1].raw())
+        out_file.write(tonie_audio.pages[0].serialize())
+        out_file.write(tonie_audio.pages[1].serialize())
         next_page_num = 2
 
     granule_position = 0
     for page_num in tonie_audio.get_chapter_page_nums(chapter_num):
         page = tonie_audio.pages[page_num]
-        granule_position += page.duration
-        out_file.write(page.adjusted(granule_position, next_page_num))
+        granule_position += page.get_duration()
+        out_file.write(page.serialize_with(granule_position, next_page_num))
         next_page_num += 1
 
 
 def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
 
     chapter_num = len(tonie_audio.header.chapter_start_pages)
-    start_page_num = len(tonie_audio.pages)
-    tonie_audio.header.chapter_start_pages.append(start_page_num)
-    tonie_audio.pages += parse_ogg(in_file)
+    next_page_num = len(tonie_audio.pages)
+    tonie_audio.header.chapter_start_pages.append(next_page_num)
+
+    src_pages = parse_ogg(in_file)
+
+    packets: list[list[bytes]] = [[]]
+    for src_page in src_pages:
+        for segment in src_page.segments:
+            if len(segment) < 255:
+                packets.append([])
+            packets[-1].append(segment)
+
+    last_page = tonie_audio.pages[-1]
+    granule_position = last_page.info[OPH_GRANULE_POS]
+    next_page_segments: list[bytes] = []
+    next_page_size = 27
+
+    for packet in packets:
+
+        added_size = len(packet) + sum(len(s) for s in packet)
+
+        if next_page_size + added_size > MAX_PAGE_SIZE or len(next_page_segments) + len(packet) > 255:
+            pad_length = MAX_PAGE_SIZE - next_page_size
+            while pad_length > 0:
+                # TODO: check
+                next_pad = min(pad_length, 255)
+                pad_data = [0] * next_pad
+                pad_data[0] = 131 # config_value 16; framepacking 3
+                next_page_segments.append(bytes(pad_data))
+                pad_length -= next_pad
+            dst_page = OggPage(last_page.info)
+            dst_page.segments = next_page_segments
+            granule_position += dst_page.get_duration()
+            dst_page.info[OPH_GRANULE_POS] = granule_position
+            dst_page.info[OPH_PAGE_NO] = next_page_num
+            dst_page.update_checksum()
+            tonie_audio.pages.append(dst_page)
+            next_page_num += 1
+            next_page_segments = []
+            next_page_size = 27
+
+        next_page_segments += packet
+        next_page_size += added_size
+
+    # TODO required to set different type for last page?
+    # dst_page.page_type = 4
+
     return chapter_num
 
 
@@ -190,11 +258,11 @@ def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
         
         for page_num in page_nums:
             page = tonie_audio.pages[page_num]
-            granule_position += page.duration
+            granule_position += page.get_duration()
             if page_num < 3:
-                page_data = page.raw()
+                page_data = page.serialize()
             else:
-                page_data = page.adjusted(granule_position, next_page_num)
+                page_data = page.serialize_with(granule_position, next_page_num)
             out_file.write(page_data)
             sha1.update(page_data)
             next_page_num += 1
