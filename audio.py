@@ -49,9 +49,8 @@ class OggPage:
         prev_length = 0
         for segment in self.segments:
             if prev_length < 255: # continued segment
-                info = struct.unpack("<B", segment[0:1])[0]
-                config_value = info >> 3
-                framepacking = info & 3
+                config_value = segment[0] >> 3
+                framepacking = segment[0] & 3
                 if framepacking == 0:
                     frame_count = 1
                 elif framepacking == 1:
@@ -59,7 +58,7 @@ class OggPage:
                 elif framepacking == 2:
                     frame_count = 2
                 elif framepacking == 3:
-                    frame_count = struct.unpack("<B", segment[1:2])[0] & 63
+                    frame_count = segment[1] & 63
                 else:
                     raise ValueError
                 duration += FRAME_DURATIONS[config_value] * frame_count
@@ -210,10 +209,10 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
         if next_page_size + added_size > MAX_PAGE_SIZE or len(next_page_segments) + len(packet) > 255:
             pad_length = MAX_PAGE_SIZE - next_page_size
             while pad_length > 0:
-                # TODO: check
+                # TODO: test
                 next_pad = min(pad_length, 255)
                 pad_data = [0] * next_pad
-                pad_data[0] = 131 # config_value 16; framepacking 3
+                pad_data[0] = (31 << 3) + 3
                 next_page_segments.append(bytes(pad_data))
                 pad_length -= next_pad
             dst_page = OggPage(last_page.info)
