@@ -216,8 +216,10 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
                 next_pad = min(pad_length, 255)
                 if next_pad == 1:
                     # can't pad with new segment
-                    # also can't extend previous segment if already 255
-                    raise NotImplementedError
+                    if len(next_page_segments[-1]) == 255:
+                        next_page_segments.append(b"\0")
+                    else:
+                        next_page_segments[-1] += b"\0"
                 else:
                     pad_data = [0] * next_pad
                     pad_data[0] = (31 << 3) + 3
