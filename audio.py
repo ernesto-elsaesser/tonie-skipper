@@ -216,8 +216,8 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
         if next_page_size + added_size > PAGE_SIZE or len(next_page_segments) + len(packet) > 255:
             pad_length = PAGE_SIZE - next_page_size
             if pad_length > 0:
-                next_page_segments = next_page_segments[:-prev_packet_len]
                 last_packet = next_page_segments[-prev_packet_len:]
+                next_page_segments = next_page_segments[:-prev_packet_len]
                 next_page_segments += pad_packet(last_packet, pad_length)
             dst_page = OggPage(last_page.info)
             dst_page.segments = next_page_segments
@@ -248,7 +248,26 @@ def pad_packet(packet: list[bytes], pad_length: int) -> list[bytes]:
 
     framepacking = packet_data[0] & 3
     if framepacking != 3:
-        raise NotImplementedError("framepacking != 3")
+        packet_data[0] |= 3
+        if framepacking == 0:
+            frame_count_byte = 1
+        elif framepacking == 1:
+            frame_count_byte = 2
+        elif framepacking == 2:
+            frame_count_byte = 2 + (1 << 7)  # VBR
+            size1 = packet_data[2]
+            pre_len = 2
+            if size1 == 255:
+                size1 += packet_data[3]
+                pre_len = 3
+            size2 = len(packet_data) - pre_len - size1
+            if size2 > 255:
+                raise NotImplementedError("size2 > 255")
+            packet_data.insert(pre_len + 1, size2)
+        else:
+            raise ValueError
+        packet_data.insert(1, frame_count_byte)
+
     padded = packet_data[1] & 64
     if padded > 0:
         raise NotImplementedError("already padded")
