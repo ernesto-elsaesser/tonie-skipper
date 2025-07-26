@@ -179,10 +179,12 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
     next_page_num = len(tonie_audio.pages)
     tonie_audio.header.chapter_start_pages.append(next_page_num)
 
-    src_pages = parse_ogg(in_file)
+    src_pages = parse_ogg(in_file)[2:]
+    src_pages.insert(0, tonie_audio.pages.pop())  # add last page for padding
+    next_page_num -= 1
 
     packets: list[list[bytes]] = []
-    for src_page in src_pages[2:]:
+    for src_page in src_pages:
         packets.append([])
         prev_len = 255
         for segment in src_page.segments:
