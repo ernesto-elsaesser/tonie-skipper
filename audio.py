@@ -106,8 +106,7 @@ class OggPage:
 class TonieHeader:
 
     def __init__(self, header: bytes):
-        self.protobuf = tonie_header_pb2.TonieHeader.FromString(
-            header)  # type: ignore
+        self.protobuf = tonie_header_pb2.TonieHeader.FromString(header)
         self.timestamp: int = self.protobuf.timestamp
         self.chapter_start_pages: list[int] = list(self.protobuf.chapterPages)
 
@@ -332,7 +331,7 @@ def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
             sha1.update(page_data)
             next_page_num += 1
 
-    tonie_header = protobuf_header.TonieHeader()  # type: ignore
+    tonie_header = tonie_header_pb2.TonieHeader()
     tonie_header.dataHash = sha1.digest()
     tonie_header.dataLength = out_file.seek(0, 1) - 0x1000
     tonie_header.timestamp = tonie_audio.header.timestamp
