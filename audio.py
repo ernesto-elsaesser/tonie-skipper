@@ -1,7 +1,7 @@
 import io
 import struct
 import hashlib
-import protobuf_header
+from . import tonie_header_pb2
 
 
 OGG_MAGIC = b"OggS"
@@ -37,6 +37,7 @@ OPH_PAGE_NO = 4
 OPH_CHECKSUM = 5
 OPH_SEGMENT_COUNT = 6
 
+
 class OggPage:
 
     def __init__(self, info: list):
@@ -51,7 +52,7 @@ class OggPage:
         duration = 0
         prev_length = 0
         for segment in self.segments:
-            if prev_length < 255: # continued segment
+            if prev_length < 255:  # continued segment
                 config_value = segment[0] >> 3
                 framepacking = segment[0] & 3
                 if framepacking == 0:
@@ -66,9 +67,9 @@ class OggPage:
                     raise ValueError
                 duration += FRAME_DURATIONS[config_value] * frame_count
             prev_length = len(segment)
-        
+
         return duration
-    
+
     def serialize_with(self, is_last: bool, granule_position: int, page_num: int):
 
         adj_info = list(self.info)
@@ -79,24 +80,24 @@ class OggPage:
         page.segments = self.segments
         page.update_checksum()
         return page.serialize()
-    
+
     def update_checksum(self):
 
         self.info[OPH_CHECKSUM] = 0
         checksum_data = self.serialize()
         self.info[OPH_CHECKSUM] = crc32(checksum_data)
-    
+
     def serialize_header(self) -> bytes:
 
         return struct.pack(PAGE_HEADER_FORMAT, *self.info)
-    
+
     def serialize_body(self) -> bytes:
 
         body = bytes(len(s) for s in self.segments)
         for segment in self.segments:
             body += segment
         return body
-    
+
     def serialize(self):
 
         return OGG_MAGIC + self.serialize_header() + self.serialize_body()
@@ -105,7 +106,8 @@ class OggPage:
 class TonieHeader:
 
     def __init__(self, header: bytes):
-        self.protobuf = protobuf_header.TonieHeader.FromString(header)  # type: ignore
+        self.protobuf = tonie_header_pb2.TonieHeader.FromString(
+            header)  # type: ignore
         self.timestamp: int = self.protobuf.timestamp
         self.chapter_start_pages: list[int] = list(self.protobuf.chapterPages)
 
@@ -184,7 +186,8 @@ def export_chapter(tonie_audio: TonieAudio, chapter_num: int, out_file: io.Buffe
         page = tonie_audio.pages[page_num]
         granule_position += page.get_duration()
         is_last = page_num == page_nums[-1]
-        out_file.write(page.serialize_with(is_last, granule_position, next_page_num))
+        out_file.write(page.serialize_with(
+            is_last, granule_position, next_page_num))
         next_page_num += 1
 
 
@@ -277,8 +280,8 @@ def pad_packet(packet: list[bytes], pad_length: int) -> list[bytes]:
         padded = packet_data[1] & 64
         if padded > 0:
             raise NotImplementedError("already padded")
-        
-    packet_data[1] |= 64 # set padding bit
+
+    packet_data[1] |= 64  # set padding bit
 
     pad_lengths = []
     padding = []
@@ -292,14 +295,14 @@ def pad_packet(packet: list[bytes], pad_length: int) -> list[bytes]:
 
     packet_data = packet_data[:2] + pad_lengths + packet_data[2:] + padding
     assert len(packet_data) == target_length, (len(packet_data), target_length)
-    
-    return [bytes(packet_data[i:i+255]) for i in range(0, len(packet_data), 255)]
+
+    return [bytes(packet_data[i:i + 255]) for i in range(0, len(packet_data), 255)]
 
 
 def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
                   out_file: io.BufferedWriter) -> list[int]:
 
-    out_file.write(bytearray(0x1000)) # placeholder
+    out_file.write(bytearray(0x1000))  # placeholder
 
     sha1 = hashlib.sha1()
 
@@ -315,7 +318,7 @@ def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
             if chapter_num > 0:
                 page_nums = [0, 1, 2] + page_nums
             first = False
-        
+
         for page_num in page_nums:
             page = tonie_audio.pages[page_num]
             granule_position += page.get_duration()
@@ -323,7 +326,8 @@ def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
                 page_data = page.serialize()
             else:
                 is_last = page_num == page_nums[-1]
-                page_data = page.serialize_with(is_last, granule_position, next_page_num)
+                page_data = page.serialize_with(
+                    is_last, granule_position, next_page_num)
             out_file.write(page_data)
             sha1.update(page_data)
             next_page_num += 1

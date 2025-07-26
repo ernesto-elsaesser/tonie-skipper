@@ -1,0 +1,1 @@
+protoc --proto_path=. --pyi_out=. --python_out=. tonie_header.proto
