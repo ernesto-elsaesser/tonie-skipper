@@ -69,9 +69,10 @@ class OggPage:
         
         return duration
     
-    def serialize_with(self, granule_position: int, page_num: int):
+    def serialize_with(self, is_last: bool, granule_position: int, page_num: int):
 
         adj_info = list(self.info)
+        adj_info[OPH_PAGE_TYPE] = 4 if is_last else 0
         adj_info[OPH_GRANULE_POS] = granule_position
         adj_info[OPH_PAGE_NO] = page_num
         page = OggPage(adj_info)
@@ -178,10 +179,12 @@ def export_chapter(tonie_audio: TonieAudio, chapter_num: int, out_file: io.Buffe
         next_page_num = 2
 
     granule_position = 0
-    for page_num in tonie_audio.get_chapter_page_nums(chapter_num):
+    page_nums = tonie_audio.get_chapter_page_nums(chapter_num)
+    for page_num in page_nums:
         page = tonie_audio.pages[page_num]
         granule_position += page.get_duration()
-        out_file.write(page.serialize_with(granule_position, next_page_num))
+        is_last = page_num == page_nums[-1]
+        out_file.write(page.serialize_with(is_last, granule_position, next_page_num))
         next_page_num += 1
 
 
@@ -224,7 +227,10 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
             granule_position += dst_page.get_duration()
             dst_page.info[OPH_GRANULE_POS] = granule_position
             dst_page.info[OPH_PAGE_NO] = next_page_num
+            dst_page.info[OPH_SEGMENT_COUNT] = len(next_page_segments)
             dst_page.update_checksum()
+            page_data = dst_page.serialize()
+            assert len(page_data) == PAGE_SIZE, (next_page_num, len(page_data))
             tonie_audio.pages.append(dst_page)
             next_page_num += 1
             next_page_segments = []
@@ -234,9 +240,6 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
         next_page_size += added_size
         prev_packet_len = len(packet)
 
-    # TODO required to set different type for last page?
-    # dst_page.info[OPH_PAGE_TYPE] = 4
-
     return chapter_num
 
 
@@ -245,6 +248,7 @@ def pad_packet(packet: list[bytes], pad_length: int) -> list[bytes]:
     # https://datatracker.ietf.org/doc/html/rfc6716#section-3.2.5
 
     packet_data = [b for s in packet for b in s]
+    target_length = len(packet_data) + pad_length
 
     framepacking = packet_data[0] & 3
     if framepacking != 3:
@@ -264,26 +268,30 @@ def pad_packet(packet: list[bytes], pad_length: int) -> list[bytes]:
             if size2 > 255:
                 raise NotImplementedError("size2 > 255")
             packet_data.insert(pre_len + 1, size2)
+            pad_length -= 1
         else:
             raise ValueError
         packet_data.insert(1, frame_count_byte)
-
-    padded = packet_data[1] & 64
-    if padded > 0:
-        raise NotImplementedError("already padded")
-    
+        pad_length -= 1
+    else:
+        padded = packet_data[1] & 64
+        if padded > 0:
+            raise NotImplementedError("already padded")
+        
     packet_data[1] |= 64 # set padding bit
 
     pad_lengths = []
     padding = []
-    while pad_length > 254:
+    while pad_length > 255:
         pad_lengths.append(254)
         padding += [0] * 254
         pad_length -= 255
+    pad_length -= 1
     pad_lengths.append(pad_length)
     padding += [0] * pad_length
 
     packet_data = packet_data[:2] + pad_lengths + packet_data[2:] + padding
+    assert len(packet_data) == target_length, (len(packet_data), target_length)
     
     return [bytes(packet_data[i:i+255]) for i in range(0, len(packet_data), 255)]
 
@@ -314,8 +322,8 @@ def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
             if page_num < 3:
                 page_data = page.serialize()
             else:
-                page_data = page.serialize_with(granule_position, next_page_num)
-                assert len(page_data) == PAGE_SIZE
+                is_last = page_num == page_nums[-1]
+                page_data = page.serialize_with(is_last, granule_position, next_page_num)
             out_file.write(page_data)
             sha1.update(page_data)
             next_page_num += 1
