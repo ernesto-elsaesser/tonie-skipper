@@ -45,6 +45,13 @@ class OggPage:
         self.info = info
         self.segments: list[bytes] = []
 
+    def set_opus_packets(self, packets: list[list[bytes]]) -> int:
+
+        self.segments = [s for p in packets for s in p]
+        if len(packets[-1][-1]) == 255:
+            self.segments.append(b"")
+        return self.get_size()
+
     def get_duration(self) -> int:
 
         # https://datatracker.ietf.org/doc/html/rfc7845
@@ -94,8 +101,6 @@ class OggPage:
     def serialize_body(self) -> bytes:
 
         body = bytes(len(s) for s in self.segments)
-        if len(self.segments[-1]) == 255:
-            body += b"\0"
         for segment in self.segments:
             body += segment
         return body
@@ -103,6 +108,47 @@ class OggPage:
     def serialize(self):
 
         return OGG_MAGIC + self.serialize_header() + self.serialize_body()
+
+    def get_size(self) -> int:
+
+        return 27 + len(self.segments) + sum(len(s) for s in self.segments)
+
+
+class OpusPacket:
+
+    def __init__(self, segments: list[bytes]):
+
+        self.data = [b for s in segments for b in s]
+
+    def three_pack(self) -> int:
+
+        framepacking = self.data[0] & 3
+        if framepacking == 3:
+            padded = self.data[1] & 64
+            if padded > 0:
+                raise NotImplementedError("already padded")
+            return 0
+
+        self.data[0] |= 3
+        if framepacking == 0:
+            frame_count_byte = 1
+        elif framepacking == 1:
+            frame_count_byte = 2
+        elif framepacking == 2:
+            frame_count_byte = 2 + (1 << 7)  # VBR
+            size1 = self.data[2]
+            assert size1 < 255, size1
+            #    size1 += self.data[3]
+            #    pre_len = 3
+        else:
+            raise ValueError
+        self.data.insert(1, frame_count_byte)
+        return 1
+
+    def get_segments(self) -> list[bytes]:
+
+        return [bytes(self.data[i:i + 255])
+                for i in range(0, len(self.data), 255)]
 
 
 class TonieHeader:
@@ -195,103 +241,87 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
 
     last_page = tonie_audio.pages[-1]
     granule_position = last_page.info[OPH_GRANULE_POS]
-    next_page_segments: list[bytes] = []
+    next_page_packets: list[list[bytes]] = []
     next_page_size = 27
-    prev_packet_len = 0
+    next_page_seg_count = 0
 
     for packet in packets:
 
         added_size = len(packet) + sum(len(s) for s in packet)
         assert 27 + added_size < PAGE_SIZE, added_size
 
-        if next_page_size + added_size > PAGE_SIZE or len(next_page_segments) + len(packet) > 255:
-            last_packet = next_page_segments[-prev_packet_len:]
-            next_page_segments = next_page_segments[:-prev_packet_len]
-            pad_length = PAGE_SIZE - next_page_size
-            padded_packet = pad_packet(last_packet, pad_length)
-            next_page_segments += padded_packet
+        if next_page_size + added_size > PAGE_SIZE or next_page_seg_count + len(packet) > 255:
             dst_page = OggPage(last_page.info)
-            dst_page.segments = next_page_segments
+            dst_page.info[OPH_PAGE_NO] = next_page_num
+            pad_page(dst_page, next_page_packets)
             granule_position += dst_page.get_duration()
             dst_page.info[OPH_GRANULE_POS] = granule_position
-            dst_page.info[OPH_PAGE_NO] = next_page_num
             dst_page.info[OPH_SEGMENT_COUNT] = len(dst_page.segments)
             dst_page.update_checksum()
-            page_data = dst_page.serialize()
-            assert len(page_data) == PAGE_SIZE, (next_page_num, len(page_data),
-                                                 [len(s) for s in last_packet],
-                                                 [len(s) for s in padded_packet])
             tonie_audio.pages.append(dst_page)
             next_page_num += 1
-            next_page_segments = []
+            next_page_packets = []
             next_page_size = 27
+            next_page_seg_count = 0
 
-        next_page_segments += packet
+        next_page_packets.append(packet)
+        next_page_seg_count += len(packet)
         next_page_size += added_size
-        prev_packet_len = len(packet)
 
     return chapter_num
 
 
-def pad_packet(packet: list[bytes], pad_length: int) -> list[bytes]:
+def pad_page(page: OggPage, packets: list[list[bytes]]) -> OggPage:
 
+    unpadded_size = page.set_opus_packets(packets)
+    pad_length = PAGE_SIZE - unpadded_size
     if pad_length == 0:
-        return packet
+        return page
 
     # https://datatracker.ietf.org/doc/html/rfc6716#section-3.2.5
 
-    packet_data = [b for s in packet for b in s]
+    last_packet = OpusPacket(packets[-1])
+    prev_packet = OpusPacket(packets[-2])
 
-    framepacking = packet_data[0] & 3
-    if framepacking != 3:
-        packet_data[0] |= 3
-        if framepacking == 0:
-            frame_count_byte = 1
-        elif framepacking == 1:
-            frame_count_byte = 2
-        elif framepacking == 2:
-            frame_count_byte = 2 + (1 << 7)  # VBR
-            size1 = packet_data[2]
-            pre_len = 2
-            if size1 == 255:
-                size1 += packet_data[3]
-                pre_len = 3
-            size2 = len(packet_data) - pre_len - size1
-            if size2 > 255:
-                raise NotImplementedError("size2 > 255")
-            packet_data.insert(pre_len + 1, size2)
-            pad_length -= 1
-        else:
-            raise ValueError
-        packet_data.insert(1, frame_count_byte)
-        pad_length -= 1
-    else:
-        padded = packet_data[1] & 64
-        if padded > 0:
-            raise NotImplementedError("already padded")
+    pad_length -= last_packet.three_pack()
+    packets[-1] = last_packet.get_segments()
 
-    if pad_length > 0:  # repacking alone might pad enough
-        packet_data[1] |= 64  # set padding bit
+    if pad_length > 0:
+        pad_length -= prev_packet.three_pack()
+        packets[-2] = prev_packet.get_segments()
 
-        tail_len = len(packet[-1]) + pad_length
-        added_segs = tail_len // 255
-        pad_length -= added_segs
-        assert pad_length > 0, added_segs
+        if pad_length > 0:
 
-        pad_lengths = []
-        padding = []
-        while pad_length > 255:
-            pad_lengths.append(254)
-            padding += [0] * 254
-            pad_length -= 255
-        pad_length -= 1
-        pad_lengths.append(pad_length)
-        padding += [0] * pad_length
+            last_packet.data[1] |= 64  # set padding bit
 
-        packet_data = packet_data[:2] + pad_lengths + packet_data[2:] + padding
+            last_seg_len = len(packets[-1][-1])
+            if last_seg_len + pad_length < 255:
+                zero_count = pad_length - 1
+            else:
+                added_segs = (last_seg_len + pad_length) // 255
+                added_pads = (pad_length // 255) + 1
+                zero_count = pad_length - added_segs - added_pads
 
-    return [bytes(packet_data[i:i + 255])
-            for i in range(0, len(packet_data), 255)]
+            pad_lengths = [255] * (zero_count // 255) + [zero_count % 255]
+            padding = [0] * zero_count
+            last_packet.data = last_packet.data[:2] + pad_lengths \
+                + last_packet.data[2:] + padding
+
+            packets[-1] = last_packet.get_segments()
+
+    padded_size = page.set_opus_packets(packets)
+    if padded_size == PAGE_SIZE - 1:
+        prev_packet.data[1] |= 64  # set padding bit
+        prev_packet.data.insert(2, 0)
+        packets[-2] = prev_packet.get_segments()
+        padded_size = page.set_opus_packets(packets)
+
+    if padded_size != PAGE_SIZE:
+        last_packet_lens = [len(s) for s in packets[-1]]
+        raise AssertionError(page.info[OPH_PAGE_NO], unpadded_size,
+                             padded_size, last_packet_lens)
+
+    return page
 
 
 def compose(tonie_audio: TonieAudio, chapter_nums: list[int],
