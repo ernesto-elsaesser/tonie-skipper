@@ -173,25 +173,6 @@ def parse_ogg(in_file: io.BufferedReader) -> list[OggPage]:
     return pages
 
 
-def export_chapter(tonie_audio: TonieAudio, chapter_num: int, out_file: io.BufferedWriter):
-
-    next_page_num = 0
-    if chapter_num > 0:
-        out_file.write(tonie_audio.pages[0].serialize())
-        out_file.write(tonie_audio.pages[1].serialize())
-        next_page_num = 2
-
-    granule_position = 0
-    page_nums = tonie_audio.get_chapter_page_nums(chapter_num)
-    for page_num in page_nums:
-        page = tonie_audio.pages[page_num]
-        granule_position += page.get_duration()
-        is_last = page_num == page_nums[-1]
-        out_file.write(page.serialize_with(
-            is_last, granule_position, next_page_num))
-        next_page_num += 1
-
-
 def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
 
     chapter_num = len(tonie_audio.header.chapter_start_pages)
@@ -311,10 +292,11 @@ def pad_packet(packet: list[bytes], pad_length: int) -> list[bytes]:
             for i in range(0, len(packet_data), 255)]
 
 
-def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
-                  out_file: io.BufferedWriter) -> list[int]:
+def compose(tonie_audio: TonieAudio, chapter_nums: list[int],
+            out_file: io.BufferedWriter, add_header: bool = True) -> list[int]:
 
-    out_file.write(bytearray(0x1000))  # placeholder
+    if add_header:
+        out_file.write(bytearray(0x1000))  # placeholder
 
     sha1 = hashlib.sha1()
 
@@ -344,20 +326,21 @@ def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
             sha1.update(page_data)
             next_page_num += 1
 
-    tonie_header = tonie_header_pb2.TonieHeader()
-    tonie_header.dataHash = sha1.digest()
-    tonie_header.dataLength = out_file.seek(0, 1) - 0x1000
-    tonie_header.timestamp = tonie_audio.header.timestamp
-    tonie_header.chapterPages.extend(output_chapter_page_nums)
-    tonie_header.padding = bytes(0x100)
+    if add_header:
+        tonie_header = tonie_header_pb2.TonieHeader()
+        tonie_header.dataHash = sha1.digest()
+        tonie_header.dataLength = out_file.seek(0, 1) - 0x1000
+        tonie_header.timestamp = tonie_audio.header.timestamp
+        tonie_header.chapterPages.extend(output_chapter_page_nums)
+        tonie_header.padding = bytes(0x100)
 
-    tonie_header_data = tonie_header.SerializeToString()
-    pad = 0xFFC - len(tonie_header_data) + 0x100
-    tonie_header.padding = bytes(pad)
-    tonie_header_data = tonie_header.SerializeToString()
+        tonie_header_data = tonie_header.SerializeToString()
+        pad = 0xFFC - len(tonie_header_data) + 0x100
+        tonie_header.padding = bytes(pad)
+        tonie_header_data = tonie_header.SerializeToString()
 
-    out_file.seek(0)
-    out_file.write(struct.pack(">L", len(tonie_header_data)))
-    out_file.write(tonie_header_data)
+        out_file.seek(0)
+        out_file.write(struct.pack(">L", len(tonie_header_data)))
+        out_file.write(tonie_header_data)
 
     return output_chapter_page_nums
