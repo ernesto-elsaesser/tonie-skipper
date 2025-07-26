@@ -296,7 +296,7 @@ def compose(tonie_audio: TonieAudio, chapter_nums: list[int],
             out_file: io.BufferedWriter, add_header: bool = True) -> list[int]:
 
     if add_header:
-        out_file.write(bytearray(0x1000))  # placeholder
+        out_file.write(bytearray(PAGE_SIZE))  # placeholder
 
     sha1 = hashlib.sha1()
 
@@ -315,11 +315,11 @@ def compose(tonie_audio: TonieAudio, chapter_nums: list[int],
 
         for page_num in page_nums:
             page = tonie_audio.pages[page_num]
-            granule_position += page.get_duration()
-            if page_num < 3:
+            if page_num < 2:
                 page_data = page.serialize()
             else:
                 is_last = page_num == page_nums[-1]
+                granule_position += page.get_duration()
                 page_data = page.serialize_with(
                     is_last, granule_position, next_page_num)
             out_file.write(page_data)
@@ -329,7 +329,7 @@ def compose(tonie_audio: TonieAudio, chapter_nums: list[int],
     if add_header:
         tonie_header = tonie_header_pb2.TonieHeader()
         tonie_header.dataHash = sha1.digest()
-        tonie_header.dataLength = out_file.seek(0, 1) - 0x1000
+        tonie_header.dataLength = out_file.seek(0, 1) - PAGE_SIZE
         tonie_header.timestamp = tonie_audio.header.timestamp
         tonie_header.chapterPages.extend(output_chapter_page_nums)
         tonie_header.padding = bytes(0x100)
