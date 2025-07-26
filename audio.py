@@ -94,6 +94,8 @@ class OggPage:
     def serialize_body(self) -> bytes:
 
         body = bytes(len(s) for s in self.segments)
+        if len(self.segments[-1]) == 255:
+            body += b"\0"
         for segment in self.segments:
             body += segment
         return body
@@ -217,22 +219,25 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
     for packet in packets:
 
         added_size = len(packet) + sum(len(s) for s in packet)
+        assert 27 + added_size < PAGE_SIZE, added_size
 
         if next_page_size + added_size > PAGE_SIZE or len(next_page_segments) + len(packet) > 255:
+            last_packet = next_page_segments[-prev_packet_len:]
+            next_page_segments = next_page_segments[:-prev_packet_len]
             pad_length = PAGE_SIZE - next_page_size
-            if pad_length > 0:
-                last_packet = next_page_segments[-prev_packet_len:]
-                next_page_segments = next_page_segments[:-prev_packet_len]
-                next_page_segments += pad_packet(last_packet, pad_length)
+            padded_packet = pad_packet(last_packet, pad_length)
+            next_page_segments += padded_packet
             dst_page = OggPage(last_page.info)
             dst_page.segments = next_page_segments
             granule_position += dst_page.get_duration()
             dst_page.info[OPH_GRANULE_POS] = granule_position
             dst_page.info[OPH_PAGE_NO] = next_page_num
-            dst_page.info[OPH_SEGMENT_COUNT] = len(next_page_segments)
+            dst_page.info[OPH_SEGMENT_COUNT] = len(dst_page.segments)
             dst_page.update_checksum()
             page_data = dst_page.serialize()
-            assert len(page_data) == PAGE_SIZE, (next_page_num, len(page_data))
+            assert len(page_data) == PAGE_SIZE, (next_page_num, len(page_data),
+                                                 [len(s) for s in last_packet],
+                                                 [len(s) for s in padded_packet])
             tonie_audio.pages.append(dst_page)
             next_page_num += 1
             next_page_segments = []
@@ -247,10 +252,12 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
 
 def pad_packet(packet: list[bytes], pad_length: int) -> list[bytes]:
 
+    if pad_length == 0:
+        return packet
+
     # https://datatracker.ietf.org/doc/html/rfc6716#section-3.2.5
 
     packet_data = [b for s in packet for b in s]
-    target_length = len(packet_data) + pad_length
 
     framepacking = packet_data[0] & 3
     if framepacking != 3:
@@ -280,22 +287,28 @@ def pad_packet(packet: list[bytes], pad_length: int) -> list[bytes]:
         if padded > 0:
             raise NotImplementedError("already padded")
 
-    packet_data[1] |= 64  # set padding bit
+    if pad_length > 0:  # repacking alone might pad enough
+        packet_data[1] |= 64  # set padding bit
 
-    pad_lengths = []
-    padding = []
-    while pad_length > 255:
-        pad_lengths.append(254)
-        padding += [0] * 254
-        pad_length -= 255
-    pad_length -= 1
-    pad_lengths.append(pad_length)
-    padding += [0] * pad_length
+        tail_len = len(packet[-1]) + pad_length
+        added_segs = tail_len // 255
+        pad_length -= added_segs
+        assert pad_length > 0, added_segs
 
-    packet_data = packet_data[:2] + pad_lengths + packet_data[2:] + padding
-    assert len(packet_data) == target_length, (len(packet_data), target_length)
+        pad_lengths = []
+        padding = []
+        while pad_length > 255:
+            pad_lengths.append(254)
+            padding += [0] * 254
+            pad_length -= 255
+        pad_length -= 1
+        pad_lengths.append(pad_length)
+        padding += [0] * pad_length
 
-    return [bytes(packet_data[i:i + 255]) for i in range(0, len(packet_data), 255)]
+        packet_data = packet_data[:2] + pad_lengths + packet_data[2:] + padding
+
+    return [bytes(packet_data[i:i + 255])
+            for i in range(0, len(packet_data), 255)]
 
 
 def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
