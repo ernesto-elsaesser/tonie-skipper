@@ -7,9 +7,10 @@ import protobuf_header
 OGG_MAGIC = b"OggS"
 PAGE_HEADER_FORMAT = "<BBQLLLB"
 SAMPLE_RATE_KHZ = 48
+# https://datatracker.ietf.org/doc/html/rfc6716#section-3.1
 FRAME_DURATIONS = {c: [2.5, 5, 10, 20][c % 4] * SAMPLE_RATE_KHZ
                    for c in range(16, 32)}
-MAX_PAGE_SIZE = 0x1000
+PAGE_SIZE = 0x1000
 
 
 crc_table = []
@@ -44,6 +45,8 @@ class OggPage:
         self.segments: list[bytes] = []
 
     def get_duration(self) -> int:
+
+        # https://datatracker.ietf.org/doc/html/rfc7845
 
         duration = 0
         prev_length = 0
@@ -204,27 +207,18 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
     granule_position = last_page.info[OPH_GRANULE_POS]
     next_page_segments: list[bytes] = []
     next_page_size = 27
+    prev_packet_len = 0
 
     for packet in packets:
 
         added_size = len(packet) + sum(len(s) for s in packet)
 
-        if next_page_size + added_size > MAX_PAGE_SIZE or len(next_page_segments) + len(packet) > 255:
-            pad_length = MAX_PAGE_SIZE - next_page_size
-            while pad_length > 0:
-                # TODO: fix
-                next_pad = min(pad_length, 255)
-                if next_pad == 1:
-                    # can't pad with new segment
-                    if len(next_page_segments[-1]) == 255:
-                        next_page_segments.append(b"\0")
-                    else:
-                        next_page_segments[-1] += b"\0"
-                else:
-                    pad_data = [0] * next_pad
-                    pad_data[0] = (31 << 3) + 3
-                    next_page_segments.append(bytes(pad_data))
-                pad_length -= next_pad
+        if next_page_size + added_size > PAGE_SIZE or len(next_page_segments) + len(packet) > 255:
+            pad_length = PAGE_SIZE - next_page_size
+            if pad_length > 0:
+                next_page_segments = next_page_segments[:-prev_packet_len]
+                last_packet = next_page_segments[-prev_packet_len:]
+                next_page_segments += pad_packet(last_packet, pad_length)
             dst_page = OggPage(last_page.info)
             dst_page.segments = next_page_segments
             granule_position += dst_page.get_duration()
@@ -238,11 +232,41 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
 
         next_page_segments += packet
         next_page_size += added_size
+        prev_packet_len = len(packet)
 
     # TODO required to set different type for last page?
     # dst_page.info[OPH_PAGE_TYPE] = 4
 
     return chapter_num
+
+
+def pad_packet(packet: list[bytes], pad_length: int) -> list[bytes]:
+
+    # https://datatracker.ietf.org/doc/html/rfc6716#section-3.2.5
+
+    packet_data = [b for s in packet for b in s]
+
+    framepacking = packet_data[0] & 3
+    if framepacking != 3:
+        raise NotImplementedError("framepacking != 3")
+    padded = packet_data[1] & 64
+    if padded > 0:
+        raise NotImplementedError("already padded")
+    
+    packet_data[1] |= 64 # set padding bit
+
+    pad_lengths = []
+    padding = []
+    while pad_length > 254:
+        pad_lengths.append(254)
+        padding += [0] * 254
+        pad_length -= 255
+    pad_lengths.append(pad_length)
+    padding += [0] * pad_length
+
+    packet_data = packet_data[:2] + pad_lengths + packet_data[2:] + padding
+    
+    return [bytes(packet_data[i:i+255]) for i in range(0, len(packet_data), 255)]
 
 
 def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
@@ -272,6 +296,7 @@ def compose_tonie(tonie_audio: TonieAudio, chapter_nums: list[int],
                 page_data = page.serialize()
             else:
                 page_data = page.serialize_with(granule_position, next_page_num)
+                assert len(page_data) == PAGE_SIZE
             out_file.write(page_data)
             sha1.update(page_data)
             next_page_num += 1
