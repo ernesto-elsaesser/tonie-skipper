@@ -17,5 +17,4 @@ for chapter_num in tonie_audio.header.chapter_start_pages:
     ogg_file_name = f"{output_dir}/chapter{chapter_num}.ogg"
     print(ogg_file_name)
     with open(ogg_file_name, "wb") as ogg_file:
-        audio.export_chapter(tonie_audio, chapter_num, ogg_file)
-
+        audio.compose(tonie_audio, [chapter_num], ogg_file, False)

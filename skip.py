@@ -18,5 +18,4 @@ with open(in_file_name, "rb") as in_file:
 out_file_name = f"{output_dir}/500304E0"
 print(out_file_name)
 with open(out_file_name, "wb") as out_file:
-    audio.compose_tonie(tonie_audio, output_chapter_nums, out_file)
-
+    audio.compose(tonie_audio, output_chapter_nums, out_file)
