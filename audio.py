@@ -6,10 +6,10 @@ from . import tonie_header_pb2
 
 OGG_MAGIC = b"OggS"
 PAGE_HEADER_FORMAT = "<BBQLLLB"
-SAMPLE_RATE_KHZ = 48
-# https://datatracker.ietf.org/doc/html/rfc6716#section-3.1
-FRAME_DURATIONS = {c: [2.5, 5, 10, 20][c % 4] * SAMPLE_RATE_KHZ
-                   for c in range(16, 32)}
+OPUS_HEAD_MAGIC = b"OpusHead"
+OPUS_HEAD_FORMAT = "<8sBBHL"
+OPUS_VERSION = 1
+CELT_FRAME_DURATIONS = [2.5, 5, 10, 20]
 PAGE_SIZE = 0x1000
 
 
@@ -63,30 +63,34 @@ class OggPage:
             self.segments.append(b"")
         return PAGE_SIZE - self.get_size()
 
-    def get_duration(self) -> int:
+    def get_duration(self, sample_rate: int) -> int:
 
         # https://datatracker.ietf.org/doc/html/rfc7845
-
-        duration = 0
+        
+        duration_ms = 0
         prev_length = 0
         for segment in self.segments:
             if prev_length < 255:  # continued segment
+
+                # https://datatracker.ietf.org/doc/html/rfc6716#section-3.1
                 config_value = segment[0] >> 3
                 framepacking = segment[0] & 3
+
+                assert config_value > 15 # CELT
+                assert framepacking < 4
+                frame_duration = CELT_FRAME_DURATIONS[config_value % 4]
+                
                 if framepacking == 0:
                     frame_count = 1
-                elif framepacking == 1:
+                elif framepacking < 3:
                     frame_count = 2
-                elif framepacking == 2:
-                    frame_count = 2
-                elif framepacking == 3:
-                    frame_count = segment[1] & 63
                 else:
-                    raise ValueError
-                duration += FRAME_DURATIONS[config_value] * frame_count
+                    frame_count = segment[1] & 63
+
+                duration_ms += frame_duration * frame_count
             prev_length = len(segment)
 
-        return duration
+        return duration_ms * (sample_rate // 1000)
 
     def serialize_with(self, is_last: bool, granule_position: int, page_num: int):
 
@@ -206,6 +210,15 @@ class TonieAudio:
         self.header = header
         self.pages = pages
 
+        # https://datatracker.ietf.org/doc/html/rfc7845#section-5.1
+        first_segment = self.pages[0].segments[0]
+        opus_head = struct.unpack(OPUS_HEAD_FORMAT, first_segment[:16])
+        assert opus_head[0] == OPUS_HEAD_MAGIC
+        assert opus_head[1] == OPUS_VERSION
+        self.channel_count = opus_head[2]
+        self.pre_skip = opus_head[3]
+        self.sample_rate = opus_head[4]
+
     def get_chapter_count(self) -> int: 
         
         return len(self.header.chapter_start_pages)
@@ -297,7 +310,7 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
                 dst_page = OggPage(last_page.info)
                 dst_page.info[OPH_PAGE_NO] = next_page_num
                 pad_page(dst_page, next_page_packets)
-                granule_position += dst_page.get_duration()
+                granule_position += dst_page.get_duration(tonie_audio.sample_rate)
                 dst_page.info[OPH_GRANULE_POS] = granule_position
                 dst_page.update_checksum()
                 tonie_audio.pages.append(dst_page)
@@ -438,7 +451,7 @@ def compose(tonie_audio: TonieAudio,
                 page_data = page.serialize()
             else:
                 is_last = page_num == page_nums[-1]
-                granule_position += page.get_duration()
+                granule_position += page.get_duration(tonie_audio.sample_rate)
                 page_data = page.serialize_with(
                     is_last, granule_position, next_page_num)
             out_file.write(page_data)
