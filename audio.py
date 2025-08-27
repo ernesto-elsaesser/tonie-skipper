@@ -428,7 +428,7 @@ def compose(tonie_audio: TonieAudio,
         output_chapter_page_nums.append(next_page_num)
         page_nums = tonie_audio.get_chapter_page_nums(chapter_num)
         if first:
-            if chapter_num > 0:
+            if chapter_num > 0 and add_header:
                 page_nums = [0, 1, 2] + page_nums
             first = False
 

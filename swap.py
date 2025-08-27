@@ -21,4 +21,4 @@ with open(opus_path, "rb") as opus_file:
 out_file_name = f"{output_dir}/500304E0"
 print(out_file_name)
 with open(out_file_name, "wb") as out_file:
-    audio.compose(tonie_audio, [chapter_num], out_file)
+    audio.compose(tonie_audio, out_file, [chapter_num])
