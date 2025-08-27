@@ -206,12 +206,16 @@ class TonieAudio:
         self.header = header
         self.pages = pages
 
+    def get_chapter_count(self) -> int: 
+        
+        return len(self.header.chapter_start_pages)
+
     def get_chapter_page_nums(self, chapter_num: int) -> list[int]:
 
-        index = self.header.chapter_start_pages
-        start_num = index[chapter_num]
-        if chapter_num + 1 < len(index):
-            end_num = index[chapter_num + 1]
+        start_page_nums = self.header.chapter_start_pages
+        start_num = start_page_nums[chapter_num]
+        if chapter_num + 1 < len(start_page_nums):
+            end_num = start_page_nums[chapter_num + 1]
         else:
             end_num = len(self.pages)
         return list(range(start_num, end_num))
@@ -271,7 +275,7 @@ def parse_ogg(in_file: io.BufferedReader) -> list[OggPage]:
 
 def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
 
-    chapter_num = len(tonie_audio.header.chapter_start_pages)
+    new_chapter_num = tonie_audio.get_chapter_count()
     next_page_num = len(tonie_audio.pages)
     tonie_audio.header.chapter_start_pages.append(next_page_num)
 
@@ -306,7 +310,7 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
             next_page_seg_count += len(packet)
             next_page_size += added_size
 
-    return chapter_num
+    return new_chapter_num
 
 
 def pad_page(page: OggPage, packets: list[list[bytes]]) -> OggPage:
@@ -401,8 +405,14 @@ def pad_packet(packet: list[bytes], pad_len: int | None) -> list[bytes]:
     return [bytes(data[i:i + 255]) for i in range(0, len(data), 255)]
 
 
-def compose(tonie_audio: TonieAudio, chapter_nums: list[int],
-            out_file: io.BufferedWriter, add_header: bool = True) -> list[int]:
+def compose(tonie_audio: TonieAudio,
+            out_file: io.BufferedWriter,
+            chapter_nums: list[int] | None = None,
+            add_header: bool = True) -> list[int]:
+
+    if chapter_nums is None:
+        chapter_count = tonie_audio.get_chapter_count()
+        chapter_nums = list(range(chapter_count))
 
     if add_header:
         out_file.write(bytearray(PAGE_SIZE))  # placeholder
