@@ -6,8 +6,8 @@ from . import tonie_header_pb2
 
 OGG_MAGIC = b"OggS"
 PAGE_HEADER_FORMAT = "<BBQLLLB"
-OPUS_HEAD_MAGIC = b"OpusHead"
-OPUS_HEAD_FORMAT = "<8sBBHL"
+OPUS_HEADER_MAGIC = b"OpusHead"
+OPUS_HEADER_FORMAT = "<8sBBHL"
 OPUS_VERSION = 1
 CELT_FRAME_DURATIONS = [2.5, 5, 10, 20]
 PAGE_SIZE = 0x1000
@@ -29,6 +29,7 @@ def crc32(bytestream):
     return crc
 
 
+# OPH = Ogg Page Header
 OPH_VERSION = 0
 OPH_PAGE_TYPE = 1
 OPH_GRANULE_POS = 2
@@ -63,7 +64,7 @@ class OggPage:
             self.segments.append(b"")
         return PAGE_SIZE - self.get_size()
 
-    def get_duration(self, sample_rate: int) -> int:
+    def get_sample_count(self) -> int:
 
         # https://datatracker.ietf.org/doc/html/rfc7845
         
@@ -76,8 +77,8 @@ class OggPage:
                 config_value = segment[0] >> 3
                 framepacking = segment[0] & 3
 
-                assert config_value > 15 # CELT
-                assert framepacking < 4
+                assert config_value > 15, config_value  # CELT
+                assert framepacking < 4, framepacking
                 frame_duration = CELT_FRAME_DURATIONS[config_value % 4]
                 
                 if framepacking == 0:
@@ -90,7 +91,8 @@ class OggPage:
                 duration_ms += frame_duration * frame_count
             prev_length = len(segment)
 
-        return duration_ms * (sample_rate // 1000)
+        # https://datatracker.ietf.org/doc/html/rfc7845#section-4
+        return duration_ms * 48 # KHz
 
     def serialize_with(self, is_last: bool, granule_position: int, page_num: int):
 
@@ -212,12 +214,12 @@ class TonieAudio:
 
         # https://datatracker.ietf.org/doc/html/rfc7845#section-5.1
         first_segment = self.pages[0].segments[0]
-        opus_head = struct.unpack(OPUS_HEAD_FORMAT, first_segment[:16])
-        assert opus_head[0] == OPUS_HEAD_MAGIC
+        opus_head = struct.unpack(OPUS_HEADER_FORMAT, first_segment[:16])
+        assert opus_head[0] == OPUS_HEADER_MAGIC
         assert opus_head[1] == OPUS_VERSION
         self.channel_count = opus_head[2]
         self.pre_skip = opus_head[3]
-        self.sample_rate = opus_head[4]
+        self.input_sample_rate = opus_head[4]
 
     def get_chapter_count(self) -> int: 
         
@@ -310,7 +312,7 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
                 dst_page = OggPage(last_page.info)
                 dst_page.info[OPH_PAGE_NO] = next_page_num
                 pad_page(dst_page, next_page_packets)
-                granule_position += dst_page.get_duration(tonie_audio.sample_rate)
+                granule_position += dst_page.get_sample_count()
                 dst_page.info[OPH_GRANULE_POS] = granule_position
                 dst_page.update_checksum()
                 tonie_audio.pages.append(dst_page)
@@ -432,38 +434,41 @@ def compose(tonie_audio: TonieAudio,
 
     sha1 = hashlib.sha1()
 
-    output_chapter_page_nums = []
-    granule_position = 0
-    next_page_num = 0
-    first = True
+    # third page already contains first frames of first chapter
+    # however, it is required for correct alignment, and thus written at start
+
+    for page in tonie_audio.pages[:3]:
+        page_data = page.serialize()
+        out_file.write(page_data)
+        sha1.update(page_data)
+
+    chapter_pages = []
+    granule_position = tonie_audio.pages[2].info[OPH_GRANULE_POS]
+    dst_page_num = 3
 
     for chapter_num in chapter_nums:
-        output_chapter_page_nums.append(next_page_num)
-        page_nums = tonie_audio.get_chapter_page_nums(chapter_num)
-        if first:
-            if chapter_num > 0 and add_header:
-                page_nums = [0, 1, 2] + page_nums
-            first = False
-
-        for page_num in page_nums:
-            page = tonie_audio.pages[page_num]
-            if page_num < 2:
-                page_data = page.serialize()
-            else:
-                is_last = page_num == page_nums[-1]
-                granule_position += page.get_duration(tonie_audio.sample_rate)
-                page_data = page.serialize_with(
-                    is_last, granule_position, next_page_num)
+        chapter_page_num = 0 if len(chapter_pages) == 0 else dst_page_num
+        chapter_pages.append(chapter_page_num)
+        src_page_nums = tonie_audio.get_chapter_page_nums(chapter_num)
+        last_chapter = chapter_num == chapter_nums[-1]
+        for src_page_num in src_page_nums:
+            if src_page_num < 3:
+                continue
+            page = tonie_audio.pages[src_page_num]
+            granule_position += page.get_sample_count()
+            last_page = last_chapter and src_page_num == src_page_nums[-1]
+            page_data = page.serialize_with(
+                last_page, granule_position, dst_page_num)
             out_file.write(page_data)
             sha1.update(page_data)
-            next_page_num += 1
+            dst_page_num += 1
 
     if add_header:
         tonie_header = tonie_header_pb2.TonieHeader()
         tonie_header.dataHash = sha1.digest()
         tonie_header.dataLength = out_file.seek(0, 1) - PAGE_SIZE
         tonie_header.timestamp = tonie_audio.header.timestamp
-        tonie_header.chapterPages.extend(output_chapter_page_nums)
+        tonie_header.chapterPages.extend(chapter_pages)
         tonie_header.padding = bytes(0x100)
 
         tonie_header_data = tonie_header.SerializeToString()
@@ -475,4 +480,4 @@ def compose(tonie_audio: TonieAudio,
         out_file.write(struct.pack(">L", len(tonie_header_data)))
         out_file.write(tonie_header_data)
 
-    return output_chapter_page_nums
+    return chapter_pages
