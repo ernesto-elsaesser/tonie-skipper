@@ -11,6 +11,6 @@ dependencies = [
 requires-python = ">=3.9"
 
 [project.scripts]
-tonie-skip = "cli:skip"
-tonie-swap = "cli:swap"
-tonie-export = "cli:export"
+tonie-skip = "tonie:skip"
+tonie-swap = "tonie:swap"
+tonie-export = "tonie:export"
