@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tonie"
+version = "0.1.0"
+dependencies = [
+  "protobuf"
+]
+requires-python = ">=3.9"
+
+[project.scripts]
+tonie-skip = "cli:skip"
+tonie-swap = "cli:swap"
+tonie-export = "cli:export"
