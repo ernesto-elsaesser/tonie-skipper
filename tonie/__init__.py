@@ -11,13 +11,13 @@ def export():
 
     input_path, output_dir = sys.argv[1:3]
 
-    print(input_path)
+    print("reading", input_path)
     with open(input_path, "rb") as in_file:
         tonie_audio = audio.parse_tonie(in_file)
 
     for chapter_num in tonie_audio.header.chapter_start_pages:
         ogg_file_name = f"{output_dir}/chapter{chapter_num}.ogg"
-        print(ogg_file_name)
+        print("writing", ogg_file_name)
         with open(ogg_file_name, "wb") as ogg_file:
             audio.compose(tonie_audio, ogg_file, [chapter_num], False)
 
@@ -26,20 +26,20 @@ def skip():
     Remove chapter of an existing tonie
 
     input_path - path to the input tonie audio file
-    output_path - path to the output folder
-    chapter_list - comma-separated list of chapter numbers (starting from 0)
+    output_path - path to the output tonie audio file
+    *chapter_nums - chapter numbers to keep
     """
 
-    input_path, output_path, chapter_list = sys.argv[1:4]
-    output_chapter_nums = [int(n) for n in chapter_list.split(",")]
+    input_path, output_path, *chapter_nums = sys.argv[1:]
+    chapter_indices = [int(n) - 1 for n in chapter_nums]
 
-    print(input_path)
+    print("reading", input_path)
     with open(input_path, "rb") as in_file:
         tonie_audio = audio.parse_tonie(in_file)
 
-    print(output_path)
+    print("writing", output_path)
     with open(output_path, "wb") as out_file:
-        audio.compose(tonie_audio, out_file, output_chapter_nums)
+        audio.compose(tonie_audio, out_file, chapter_indices)
 
 
 def swap():
@@ -53,18 +53,18 @@ def swap():
 
     input_path, output_path, *opus_paths = sys.argv[1:]
 
-    print(input_path)
+    print("reading", input_path)
     with open(input_path, "rb") as in_file:
         tonie_audio = audio.parse_tonie(in_file)
 
     chapter_nums = []
     for opus_path in opus_paths:
-        print(opus_path)
+        print("reading", opus_path)
         with open(opus_path, "rb") as opus_file:
             chapter_num = audio.append_chapter(tonie_audio, opus_file)
             chapter_nums.append(chapter_num)
 
-    print(output_path)
+    print("writing", output_path)
     with open(output_path, "wb") as out_file:
         audio.compose(tonie_audio, out_file, chapter_nums)
 
