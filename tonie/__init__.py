@@ -6,7 +6,7 @@ def export():
     Export tonie chapters as Ogg files
 
     input_path - path to the input tonie audio file
-    output_dir - path to the output tonie audio file
+    output_dir - path to the output folder
     """
 
     input_path, output_dir = sys.argv[1:3]
@@ -15,11 +15,12 @@ def export():
     with open(input_path, "rb") as in_file:
         tonie_audio = audio.parse_tonie(in_file)
 
-    for chapter_num in tonie_audio.header.chapter_start_pages:
+    for chapter_num in range(len(tonie_audio.header.chapter_start_pages)):
         ogg_file_name = f"{output_dir}/chapter{chapter_num}.ogg"
         print("writing", ogg_file_name)
         with open(ogg_file_name, "wb") as ogg_file:
             audio.compose(tonie_audio, ogg_file, [chapter_num], False)
+
 
 def skip():
     """
