@@ -306,9 +306,16 @@ def append_chapter(tonie_audio: TonieAudio, in_file: io.BufferedReader) -> int:
         for packet in src_page.get_opus_packets():
 
             added_size = len(packet) + sum(len(s) for s in packet)
+            # assert that the packet itself isn't already too big for a page
             assert 27 + added_size < PAGE_SIZE, added_size
 
-            if next_page_size + added_size > PAGE_SIZE or next_page_seg_count + len(packet) > 255:
+            # repacking may add bytes, but padding cannot shrink,
+            # so we need to make sure that the packet fits even if
+            # it ends up being the last one and will get repacked
+            repacked = repack_packet(packet)
+            repacked_size = len(repacked) + sum(len(s) for s in repacked)
+
+            if next_page_size + repacked_size >= PAGE_SIZE or next_page_seg_count + len(packet) > 255:
                 dst_page = OggPage(last_page.info)
                 dst_page.info[OPH_PAGE_NO] = next_page_num
                 pad_page(dst_page, next_page_packets)
@@ -334,35 +341,34 @@ def pad_page(page: OggPage, packets: list[list[bytes]]) -> OggPage:
     if missing_bytes == 0:
         return page
 
-    pre_size = page.get_size()
-    pre_last_packet_lens = [len(s) for s in packets[-1]]
+    padded = False
+    debug_info = "pre %i -1=%s\n" % (missing_bytes, [len(s) for s in packets[-1]])
 
-    packets[-1] = repack_packet(packets[-1])
-    missing_bytes = page.set_opus_packets(packets)
-    if missing_bytes == 0:
-        return page
+    # padding of last packet may undershoot due to segment boundary effects.
+    # padding earlier packets to pad_len = None (zero) adds a single byte.
+    # repacking to framepacking = 3 may also add a single byte.
 
-    packets[-2] = repack_packet(packets[-2])
-    missing_bytes = page.set_opus_packets(packets)
-    if missing_bytes == 0:
-        return page
-
-    packets[-1] = pad_packet(packets[-1], missing_bytes)
-    missing_bytes = page.set_opus_packets(packets)
-    if missing_bytes == 0:
-        return page
-
-    if missing_bytes == 1:
-        packets[-2] = pad_packet(packets[-2], None)
+    for i in range(1, len(packets)):
+        packets[-i] = repack_packet(packets[-i])
         missing_bytes = page.set_opus_packets(packets)
         if missing_bytes == 0:
             return page
+        debug_info += "rep %i %i=%s\n" % (missing_bytes, -i, [len(s) for s in packets[-i]])
+        if padded:
+            pad_len = None # empty padding, adds one byte
+        else:
+            pad_len = missing_bytes
+            padded = True
+        packets[-i] = pad_packet(packets[-i], pad_len)
+        missing_bytes = page.set_opus_packets(packets)
+        if missing_bytes == 0:
+            return page
+        debug_info += "pad %i %i=%s\n" % (missing_bytes, -i, [len(s) for s in packets[-i]])
+
+    print(debug_info)
 
     page_num = page.info[OPH_PAGE_NO]
-    post_size = page.get_size()
-    post_last_packet_lens = [len(s) for s in packets[-1]]
-    raise AssertionError(page_num, pre_size, post_size,
-                         pre_last_packet_lens, post_last_packet_lens)
+    raise AssertionError(page_num)
 
 
 # https://datatracker.ietf.org/doc/html/rfc6716#section-3.2.5
